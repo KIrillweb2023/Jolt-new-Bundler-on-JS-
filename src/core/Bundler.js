@@ -14,23 +14,26 @@ import cssnano from 'cssnano';
 import sharp from 'sharp';
 import { transform as lightningcss } from 'lightningcss';
 import { minify as htmlMinifier } from 'html-minifier-terser';
-
 import { Logger, colors } from './Logger.js';
 
 const compressAsync = promisify(brotliCompress);
 const gzipAsync = promisify(gzip);
 
-
-
 export class JoltBundler {
+  /**
+   * @type {BuildConfig}
+   */
   #config;
-  #isProduction;
+
+  #isProduction = process.env.NODE_ENV === 'production';
+
   #cache = {
     assets: new Map(),
     scripts: new Map(),
     styles: new Map(),
     html: new Map()
   };
+
   #abortController = new AbortController();
 
   constructor(config = {}) {
@@ -41,7 +44,10 @@ export class JoltBundler {
       sourcemap: true,
       tailwind: false,
       compress: true,
-      watch: false,
+      watcher: null,
+      pendingChanges: new Set(),
+      debounceTimer: null,
+      activeRebuild: false,
       serve: false,
       css: { include: ['src/**/*.css'], exclude: [] },
       minify: { js: true, css: true, html: true },
@@ -54,11 +60,10 @@ export class JoltBundler {
     Logger.divider();
     Logger.info(`${colors.bright}🚀 Starting ${this.#isProduction ? 'production' : 'development'} build...`);
     const start = performance.now();
-    
+
     try {
       await this.#cleanOutput();
-      
-      // Параллельная обработка всех типов файлов
+
       await Promise.all([
         this.#processScripts(),
         this.#processStyles(),
@@ -67,9 +72,7 @@ export class JoltBundler {
         this.#processHtml()
       ]);
 
-      if (this.#config.compress) {
-        await this.#compressOutput();
-      }
+      if (this.#config.compress) await this.#compressOutput();
 
       const time = (performance.now() - start).toFixed(2);
       Logger.success(`${colors.bright}✨ Build completed successfully in ${time}s`);
@@ -100,12 +103,10 @@ export class JoltBundler {
     const jsFiles = jsResult.status === 'fulfilled' ? jsResult.value : [];
     const cssFiles = cssResult.status === 'fulfilled' ? cssResult.value : [];
 
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < htmlFiles.length; i += BATCH_SIZE) {
-      const batch = htmlFiles.slice(i, i + BATCH_SIZE);
-      await Promise.all(batch.map(file => this.#processSingleHtml(file, jsFiles, cssFiles)));
+    for (const file of htmlFiles) {
+      await this.#processSingleHtml(file, jsFiles, cssFiles);
     }
-    
+
     Logger.success(`Processed ${htmlFiles.length} HTML files`);
   }
 
@@ -125,12 +126,12 @@ export class JoltBundler {
       }
 
       let html = await fs.readFile(file, 'utf8');
-      
-      const jsTags = jsFiles?.map(js => 
+
+      const jsTags = jsFiles.map(js =>
         `\t<script type="module" src="/${path.relative(this.#config.outDir, js)}"></script>`
       ).join('\n') || '';
 
-      const cssTags = cssFiles?.map(css => 
+      const cssTags = cssFiles.map(css =>
         `\t<link rel="stylesheet" href="/${path.relative(this.#config.outDir, css)}">`
       ).join('\n') || '';
 
@@ -151,6 +152,7 @@ export class JoltBundler {
         mtime: currentMtime,
         html: html
       });
+
     } catch (error) {
       if (error.name !== 'AbortError') {
         Logger.error(`Failed to process HTML file ${file}:`, error);
@@ -176,7 +178,6 @@ export class JoltBundler {
   async #cleanOutput() {
     await fs.rm(this.#config.outDir, { recursive: true, force: true });
     await fs.mkdir(path.join(this.#config.outDir, this.#config.assetsDir), { recursive: true });
-    
     this.#cache = {
       assets: new Map(),
       scripts: new Map(),
@@ -200,7 +201,6 @@ export class JoltBundler {
       }
 
       const ctx = await esbuild.context(this.#getEsbuildConfig());
-      
       if (this.#config.watch) {
         await ctx.watch();
       } else {
@@ -211,6 +211,7 @@ export class JoltBundler {
       this.#cache.scripts.set(cacheKey, {
         mtime: currentMtime
       });
+
     } catch (error) {
       if (error.name !== 'AbortError') {
         Logger.error('Script processing failed:', error);
@@ -233,7 +234,7 @@ export class JoltBundler {
         '.js': 'jsx',
         '.ts': 'tsx',
         '.jsx': 'jsx',
-        '.tsx': 'tsx',
+        '.tsx': 'tsx'
       },
       plugins: [{
         name: 'on-end',
@@ -251,49 +252,60 @@ export class JoltBundler {
     }
   }
 
-  async #processStyles() {
-    const { include, exclude } = this.#config.css;
-    const cssFiles = await globby(include, { ignore: exclude, signal: this.#abortController.signal });
+async #processStyles() {
+  const { include, exclude } = this.#config.css;
+  const cssFiles = await globby(include, { ignore: exclude, signal: this.#abortController.signal });
+  if (!cssFiles.length) return;
 
-    if (!cssFiles.length) return;
+  const cacheKey = cssFiles.map(f => path.basename(f)).join('|');
+  const latestMtime = Math.max(...await Promise.all(
+    cssFiles.map(async f => (await fs.stat(f)).mtimeMs)
+  )).toString();
 
-    const cacheKey = cssFiles.map(f => path.basename(f)).join('|');
-    const latestMtime = Math.max(...await Promise.all(
-      cssFiles.map(async f => (await fs.stat(f)).mtimeMs)
-    )).toString();
-
-    if (this.#cache.styles.has(cacheKey)) {
-      const cached = this.#cache.styles.get(cacheKey);
-      if (cached.mtime === latestMtime) {
-        Logger.debug('Using cached CSS build');
-        return;
-      }
-    }
-
-    try {
-      const combinedCss = await this.#compileCssWithDependencies(cssFiles);
-      const processedCss = await this.#applyPostcssPlugins(combinedCss);
-      const cssHash = createHash('sha256').update(processedCss).digest('hex').slice(0, 8);
-      const outputFile = path.join(this.#config.outDir, `styles-${cssHash}.css`);
-      
-      await fs.writeFile(outputFile, processedCss);
-      Logger.success(`Created CSS bundle: ${path.basename(outputFile)}`);
-
-      this.#cache.styles.set(cacheKey, {
-        mtime: latestMtime
-      });
-    } catch (error) {
-      if (error.name !== 'AbortError') {
-        Logger.error('CSS processing failed:', error);
-        throw error;
-      }
+  if (this.#cache.styles.has(cacheKey)) {
+    const cached = this.#cache.styles.get(cacheKey);
+    if (cached.mtime === latestMtime) {
+      Logger.debug('Using cached CSS build');
+      return;
     }
   }
 
+  try {
+    const combinedCss = await this.#compileCssWithDependencies(cssFiles);
+    const processedCss = await this.#applyPostcssPlugins(combinedCss);
+    const cssHash = createHash('sha256').update(processedCss).digest('hex').slice(0, 8);
+    const outputFile = path.join(this.#config.outDir, `styles-${cssHash}.css`);
+
+    // Удаление старых CSS-файлов
+    await this.#clearOldCssBundles();
+
+    // Запись нового
+    await fs.writeFile(outputFile, processedCss);
+
+    this.#cache.styles.set(cacheKey, {
+      mtime: latestMtime,
+      hash: cssHash
+    });
+
+    Logger.success(`Created CSS bundle: ${path.basename(outputFile)}`);
+
+  } catch (error) {
+    if (error.name !== 'AbortError') {
+      Logger.error('CSS processing failed:', error);
+      throw error;
+    }
+  }
+}
+
+async #clearOldCssBundles() {
+  const files = await globby(`${this.#config.outDir}/styles-*.css`);
+  for (const file of files) {
+    await fs.unlink(file);
+  }
+}
+
   async #compileCssWithDependencies(files) {
-    const results = await Promise.all(
-      files.map(file => this.#processSingleCssFile(file))
-    );
+    const results = await Promise.all(files.map(file => this.#processSingleCssFile(file)));
     return results.join('\n');
   }
 
@@ -302,9 +314,8 @@ export class JoltBundler {
       const fileContent = await fs.readFile(file, 'utf8');
       const ext = path.extname(file);
       const dir = path.dirname(file);
-
       let compiledCss = await this.#resolveImports(fileContent, dir);
-      
+
       if (ext === '.scss' || ext === '.sass') {
         const sass = await import('sass');
         compiledCss = sass.compileString(compiledCss, {
@@ -318,8 +329,9 @@ export class JoltBundler {
           paths: [dir, 'node_modules']
         })).css;
       }
-      
+
       return compiledCss;
+
     } catch (error) {
       if (error.name !== 'AbortError') {
         Logger.error(`Failed to process ${file}:`, error);
@@ -331,30 +343,22 @@ export class JoltBundler {
 
   async #resolveImports(cssContent, baseDir) {
     const importRegex = /@import\s+["'](.+?)["'];/g;
-    const imports = [];
-    let match;
-    
-    // Сначала собираем все импорты
-    while ((match = importRegex.exec(cssContent)) !== null) {
-      imports.push(match[1]);
-    }
-    
-    // Затем параллельно их обрабатываем
+    const imports = [...cssContent.matchAll(importRegex)].map(m => m[1]);
+
     const resolvedImports = await Promise.all(
-      imports.map(async importPath => {
+      imports.map(async (importPath) => {
         const fullPath = path.resolve(baseDir, importPath);
         try {
           const importedContent = await fs.readFile(fullPath, 'utf8');
-          return this.#resolveImports(importedContent, path.dirname(fullPath));
+          return await this.#resolveImports(importedContent, path.dirname(fullPath));
         } catch {
           Logger.warn(`Could not resolve @import "${importPath}" in ${baseDir}`);
           return '';
         }
       })
     );
-    
-    // Заменяем импорты в оригинальном содержимом
-    return cssContent.replace(importRegex, () => resolvedImports.shift() || '');
+
+    return cssContent.replace(importRegex, () => resolvedImports.shift() ?? '');
   }
 
   async #applyPostcssPlugins(css) {
@@ -379,6 +383,7 @@ export class JoltBundler {
       }
 
       return result.css;
+
     } catch (error) {
       Logger.error('PostCSS processing failed:', error);
       return css;
@@ -391,13 +396,10 @@ export class JoltBundler {
       '!**/*.{js,jsx,ts,tsx,css,scss,sass,less}'
     ], { signal: this.#abortController.signal });
 
-    // Обработка ассетов параллельно с ограничением количества одновременно обрабатываемых файлов
-    const CONCURRENT_ASSETS = 10;
-    for (let i = 0; i < assets.length; i += CONCURRENT_ASSETS) {
-      const batch = assets.slice(i, i + CONCURRENT_ASSETS);
-      await Promise.all(batch.map(asset => this.#processSingleAsset(asset)));
+    for (const file of assets) {
+      await this.#processSingleAsset(file);
     }
-    
+
     Logger.success(`Processed ${assets.length} assets`);
   }
 
@@ -409,9 +411,7 @@ export class JoltBundler {
 
       if (this.#cache.assets.has(cacheKey)) {
         const cached = this.#cache.assets.get(cacheKey);
-        if (cached.mtime === currentMtime) {
-          return;
-        }
+        if (cached.mtime === currentMtime) return;
       }
 
       const ext = path.extname(file).toLowerCase();
@@ -428,6 +428,7 @@ export class JoltBundler {
         mtime: currentMtime,
         outputPath: outputPath
       });
+
     } catch (error) {
       if (error.name !== 'AbortError') {
         Logger.error(`Failed to process asset ${file}:`, error);
@@ -446,7 +447,7 @@ export class JoltBundler {
     try {
       await sharp(content)
         .resize({ width: 2000, withoutEnlargement: true })
-        .toFormat(ext.slice(1), { 
+        .toFormat(ext.slice(1), {
           quality: this.#isProduction ? 75 : 90,
           effort: 6
         })
@@ -461,12 +462,8 @@ export class JoltBundler {
 
   async #copyStaticFiles() {
     const files = await globby('src/public/**/*', { signal: this.#abortController.signal });
-    
-    // Копирование файлов параллельно с ограничением количества
-    const CONCURRENT_COPIES = 10;
-    for (let i = 0; i < files.length; i += CONCURRENT_COPIES) {
-      const batch = files.slice(i, i + CONCURRENT_COPIES);
-      await Promise.all(batch.map(file => this.#copySingleFile(file)));
+    for (const file of files) {
+      await this.#copySingleFile(file);
     }
   }
 
@@ -477,27 +474,19 @@ export class JoltBundler {
   }
 
   async #compressOutput() {
-    const files = await globby([`${this.#config.outDir}/**/*.{js,css,html}`], 
-      { signal: this.#abortController.signal });
-    
-    // Параллельное сжатие с ограничением количества одновременно обрабатываемых файлов
-    const CONCURRENT_COMPRESS = 5;
-    for (let i = 0; i < files.length; i += CONCURRENT_COMPRESS) {
-      const batch = files.slice(i, i + CONCURRENT_COMPRESS);
-      await Promise.all(batch.map(file => this.#compressSingleFile(file)));
+    const files = await globby([`${this.#config.outDir}/**/*.{js,css,html}`], { signal: this.#abortController.signal });
+
+    for (const file of files) {
+      await this.#compressSingleFile(file);
     }
-    
+
     Logger.success(`Compressed ${files.length} files (Brotli + Gzip)`);
   }
 
   async #compressSingleFile(file) {
     try {
       const content = await fs.readFile(file);
-      const [brotli, gz] = await Promise.all([
-        compressAsync(content),
-        gzipAsync(content)
-      ]);
-      
+      const [brotli, gz] = await Promise.all([compressAsync(content), gzipAsync(content)]);
       await Promise.all([
         fs.writeFile(`${file}.br`, brotli),
         fs.writeFile(`${file}.gz`, gz)
@@ -511,26 +500,77 @@ export class JoltBundler {
   }
 
   #startWatcher() {
-    const watcher = chokidar.watch('src', {
-      ignored: /(^|[/\\])\../,
+    if (this.#config.watcher) return;
+
+    this.#config.watcher = chokidar.watch(['src'], {
+      ignored: [
+        /(^|[/\\])\../,
+        /node_modules/,
+        /dist/,
+        /\.(git|DS_Store)/
+      ],
+      ignoreInitial: true,
       persistent: true,
-      ignoreInitial: true
+      useFsEvents: true,
+      atomic: 300,
+      awaitWriteFinish: {
+        stabilityThreshold: 100,
+        pollInterval: 50
+      }
     });
 
-    const rebuildDebounce = this.#debounce(async (path) => {
-      Logger.info(`🔄 File changed: ${path}`);
-      try {
-        await this.build();
-      } catch (error) {
-        Logger.error('Rebuild failed:', error);
-      }
-    }, 200);
+    const handleChange = (filePath) => {
+      this.#config.pendingChanges.add(filePath);
+      clearTimeout(this.#config.debounceTimer);
+      this.#config.debounceTimer = setTimeout(() => this.#processChanges(), 100);
+    };
 
-    watcher.on('change', rebuildDebounce);
-    watcher.on('add', rebuildDebounce);
-    watcher.on('unlink', rebuildDebounce);
+    this.#config.watcher
+      .on('add', handleChange)
+      .on('change', handleChange)
+      .on('unlink', handleChange)
+      .on('error', error => Logger.error('Watcher error:', error));
 
     Logger.info(`${colors.green}👀 Watching for changes...${colors.reset}`);
+  }
+
+  async #processChanges() {
+    if (this.#config.activeRebuild || !this.#config.pendingChanges.size) return;
+
+    this.#config.activeRebuild = true;
+    const changedFiles = [...this.#config.pendingChanges];
+    this.#config.pendingChanges.clear();
+
+    try {
+      Logger.info(`🔄 Detected changes in: ${changedFiles.join(', ')}`);
+
+      const hasHTML = changedFiles.some(f => f.endsWith('.html'));
+      const hasCSS = changedFiles.some(f => /\.(css|scss|sass|less)$/i.test(f));
+      const hasJS = changedFiles.some(f => /\.(js|jsx|ts|tsx)$/i.test(f));
+      const hasAssets = changedFiles.some(f => /\.(png|jpe?g|gif|svg|webp|avif|woff2?|ttf|eot)$/i.test(f));
+
+      if (hasJS) await this.#processScripts();
+      if (hasCSS) {
+        await this.#processStyles();
+        if (!hasHTML) await this.#processHtml();
+      }
+      if (hasHTML) await this.#processHtml();
+      if (hasAssets) await this.#processAssets();
+
+      Logger.success('✅ Rebuild completed');
+    } catch (error) {
+      Logger.error('Rebuild failed:', error);
+    } finally {
+      this.#config.activeRebuild = false;
+      if (this.#config.pendingChanges.size > 0) await this.#processChanges();
+    }
+  }
+
+  async stop() {
+    if (this.#config.watcher) {
+      await this.#config.watcher.close();
+      this.#config.watcher = null;
+    }
   }
 
   #startServer() {
@@ -541,13 +581,5 @@ export class JoltBundler {
       logLevel: 0
     });
     Logger.success(`${colors.green}🌐 Server started at ${colors.underline}http://localhost:3000${colors.reset}`);
-  }
-
-  #debounce(func, wait) {
-    let timeout;
-    return function(...args) {
-      clearTimeout(timeout);
-      timeout = setTimeout(() => func.apply(this, args), wait);
-    };
   }
 }
