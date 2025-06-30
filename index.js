@@ -89,7 +89,7 @@ const bundler = new JoltBundler({
   // Расширенные настройки esbuild
   esbuild: {
     target: 'es2022',
-    format: 'esm',
+    format: 'esm',  
     treeShaking: true,
     splitting: true,
     metafile: true,
