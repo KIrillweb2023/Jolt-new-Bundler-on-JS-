@@ -1,11 +1,10 @@
 import { perf } from '../utils/perf.js';
 import { Logger } from '../core/Logger.js';
+import { processHtml } from './html-processor.js';
 import path from 'node:path';
 import { globby } from 'globby';
 import fs from "node:fs/promises";
-import { resolveImports } from './css-import-resolver.js';
 import { createHash } from 'node:crypto';
-
 import postcss from 'postcss';
 import tailwindcss from 'tailwindcss';
 import autoprefixer from 'autoprefixer';
@@ -17,58 +16,31 @@ export async function processStyles(config, cache, signal, isProduction, changed
     const { include, exclude } = config.css;
     const cssFiles = changedFiles 
         ? changedFiles.filter(f => /\.(css|scss|sass|less)$/i.test(f))
-        : await globby(include, { ignore: exclude, signal: signal });
+        : await globby(include, { ignore: exclude, signal });
 
     if (!cssFiles.length) return;
 
-    // Генерируем уникальный ключ кэша на основе всех CSS файлов
-    const allCssFiles = await globby(include, { ignore: exclude, signal: signal });
-    const cacheKey = allCssFiles.map(f => path.basename(f)).join('|');
-    
-    // Получаем хеш текущего состояния CSS файлов
-    const filesContent = await Promise.all(allCssFiles.map(f => fs.readFile(f, 'utf8')));
+    // Генерируем хеш на основе содержимого всех файлов
+    const filesContent = await Promise.all(cssFiles.map(f => fs.readFile(f, 'utf8')));
     const contentHash = createHash('sha256').update(filesContent.join('')).digest('hex').slice(0, 8);
+    const cacheKey = cssFiles.map(f => path.basename(f)).join('|');
 
     // Проверяем кэш
-    if (config.cache && cache.styles.has(cacheKey)) {
-        const cached = cache.styles.get(cacheKey);
-        if (cached.hash === contentHash) {
-            Logger.debug('Using cached CSS build');
-            return;
-        }
+    if (config.cache && cache.styles.has(cacheKey) && cache.styles.get(cacheKey).hash === contentHash) {
+        Logger.debug('Using cached CSS build');
+        return;
     }
 
     try {
-        const combinedCss = await compileCssWithDependencies(config, allCssFiles, isProduction);
-        const processedCss = await applyPostcssPlugins(config, combinedCss, isProduction);
+        // Компилируем все файлы
+        const compiledCss = await compileAllCssFiles(config, cssFiles, isProduction);
         
-        // Всегда используем хешированное имя файла
+        // Обрабатываем PostCSS
+        const processedCss = await applyPostcssPlugins(config, compiledCss, isProduction);
+        
+        // Сохраняем результат
         const outputFile = path.join(config.outDir, `styles-${contentHash}.css`);
-        
-        // Удаляем старые CSS файлы только если хеш изменился
-        if (cache.styles.has(cacheKey)) {
-            const oldOutputFile = cache.styles.get(cacheKey).outputFile;
-            if (oldOutputFile !== outputFile) {
-                try {
-                    await fs.unlink(oldOutputFile);
-                } catch (e) {
-                    Logger.debug(`Could not delete old CSS file: ${e.message}`);
-                }
-            }
-        }
-        
-        await fs.writeFile(outputFile, processedCss);
-
-        // Обновляем ссылку в HTML (если используется)
-        if (cache.html.size > 0) {
-            cache.html.clear();
-            await processHtml(config, cache, isProduction, signal);
-        }
-
-        cache.styles.set(cacheKey, {
-            hash: contentHash,
-            outputFile
-        });
+        await saveCssBundle(outputFile, processedCss, cache, cacheKey, contentHash, config, isProduction, signal);
 
         perf.measure('Styles Processing', 'styles-start');
         Logger.success(`Updated CSS bundle: ${path.basename(outputFile)}`);
@@ -80,70 +52,58 @@ export async function processStyles(config, cache, signal, isProduction, changed
     }
 }
 
-export async function clearOldCssBundles(outDir) {
-    const files = await globby(`${outDir}/styles-*.css`);
-    await Promise.all(files.map(file => fs.unlink(file)));
-}
-
-export async function compileCssWithDependencies(config, files, isProduction) {   
-    const results = await Promise.all(files.map(file => processSingleCssFile(config, file, isProduction)));
+async function compileAllCssFiles(config, files, isProduction) {
+    const results = await Promise.all(
+        files.map(file => compileSingleCssFile(config, file, isProduction))
+    );
     return results.join('\n');
 }
 
-export async function processSingleCssFile(config, file, isProduction) {
+async function compileSingleCssFile(config, file, isProduction) {
     try {
         const fileContent = await fs.readFile(file, 'utf8');
         const ext = path.extname(file);
         const dir = path.dirname(file);
-        let compiledCss = await resolveImports(fileContent, dir);
 
         switch (ext) {
             case '.scss':
             case '.sass':
                 const sass = await import('sass');
-
-                compiledCss = sass.compileString(compiledCss, {
+                return sass.compileString(fileContent, {
                     loadPaths: [dir, 'node_modules'],
                     style: isProduction ? 'compressed' : 'expanded',
                     sourceMap: config.sourcemap
                 }).css;
-            break;
             
             case '.less':
                 const less = await import('less');
-                compiledCss = (await less.render(compiledCss, {
+                return (await less.render(fileContent, {
                     filename: file,
                     paths: [dir, 'node_modules'],
-                    sourceMap: config.sourcemap
-                    ? { sourceMapFileInline: true }
-                    : undefined
+                    sourceMap: config.sourcemap ? { sourceMapFileInline: true } : undefined
                 })).css;
-            break;
             
             case '.styl':
-            const stylus = await import('stylus');
-                compiledCss = await new Promise((resolve, reject) => {
-                    stylus(compiledCss)
-                    .set('filename', file)
-                    .set('paths', [dir, 'node_modules'])
-                    .set('compress', isProduction)
-                    .set('sourcemap', config.sourcemap)
-                    .render((err, css) => err ? reject(err) : resolve(css));
+                const stylus = await import('stylus');
+                return await new Promise((resolve, reject) => {
+                    stylus(fileContent)
+                        .set('filename', file)
+                        .set('paths', [dir, 'node_modules'])
+                        .set('compress', isProduction)
+                        .set('sourcemap', config.sourcemap)
+                        .render((err, css) => err ? reject(err) : resolve(css));
                 });
-            break;
+            
+            default:
+                return fileContent;
         }
-
-        return compiledCss;
     } catch (error) {
-        if (error.name !== 'AbortError') {
-            Logger.error(`Failed to process ${file}:`, error);
-            throw error;
-        }
-        return '';
+        Logger.error(`Failed to process ${file}:`, error);
+        throw error;
     }
-  }
+}
 
-export async function applyPostcssPlugins(config, css, isProduction) {
+async function applyPostcssPlugins(config, css, isProduction) {
     const plugins = [
         ...(config.tailwind ? [tailwindcss(config.tailwind === true ? {} : config.tailwind)] : []),
         autoprefixer(),
@@ -161,18 +121,35 @@ export async function applyPostcssPlugins(config, css, isProduction) {
             map: config.sourcemap
         });
 
-        if (isProduction) {
-            const { code } = await lightningcss({
+        return isProduction 
+            ? (await lightningcss({
                 code: Buffer.from(result.css),
                 minify: true,
                 sourceMap: config.sourcemap
-            });
-            return code.toString();
-        }
-
-        return result.css;
+            })).code.toString()
+            : result.css;
     } catch (error) {
         Logger.error('PostCSS processing failed:', error);
         return css;
+    }
+}
+
+async function saveCssBundle(outputFile, css, cache, cacheKey, hash, config, isProduction, signal) {
+    // Удаляем старый файл если он существует
+    if (cache.styles.has(cacheKey)) {
+        const oldFile = cache.styles.get(cacheKey).outputFile;
+        if (oldFile !== outputFile) {
+            try { await fs.unlink(oldFile); } 
+            catch (e) { Logger.debug(`Could not delete old CSS file: ${e.message}`); }
+        }
+    }
+    
+    await fs.writeFile(outputFile, css);
+    
+    // Обновляем кэш и HTML при необходимости
+    cache.styles.set(cacheKey, { hash, outputFile });
+    if (cache.html.size > 0) {
+        cache.html.clear();
+        await processHtml(config, cache, isProduction, signal);
     }
 }

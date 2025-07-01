@@ -8,8 +8,8 @@ import { Logger } from "../core/Logger.js";
  * @param {Object} cache - Кеш бандлера
  */
 
-export async function stopBuildProcess({ config, context, abortController, cache }) {
-    try {
+export async function stopBuildProcess({ config, context, abortController, cache }) { /// [*] ///
+    try {  
         // Остановка вотчера файлов
         if (config.watcher) {
             await config.watcher.close();

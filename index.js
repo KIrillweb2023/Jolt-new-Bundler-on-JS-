@@ -26,12 +26,7 @@ const bundler = new JoltBundler({
   
   // Обработка CSS
   css: {
-    include: [
-      'src/sass/style.scss',
-    //   'src/**/*.scss',
-    //   'src/**/*.sass',
-    //   'src/**/*.less'
-    ],
+    include: [ 'src/sass/**/*.scss' ],
     exclude: [],
     modules: false,  // Включить CSS Modules при необходимости
     inlineCritical: true,  // Инлайнинг критического CSS

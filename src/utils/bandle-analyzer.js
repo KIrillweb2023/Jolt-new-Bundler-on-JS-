@@ -5,46 +5,41 @@ import { Logger } from '../core/Logger.js';
  * Анализирует и выводит статистику по размерам бандлов
  * @param {Object} outputs - Метаданные esbuild (из result.metafile)
  */
+export function analyzeBundle(metafile) { /// [*] ///
+    const result = {
+        totalInputSize: 0,
+        totalOutputSize: 0,
+        ratio: 0
+    };
 
-export function analyzeBundle(result) {
+    if (!metafile) {
+        Logger.warn('No metafile provided for analysis');
+        return result;
+    }
+
     try {
-        if (!result || !result.metafile) {
-            Logger.warn('No bundle analysis available - missing metafile');
-            return {};
+        // Анализ входных файлов
+        if (metafile.inputs) {
+            for (const input in metafile.inputs) {
+                result.totalInputSize += metafile.inputs[input].bytes || 0;
+            }
         }
 
-        const { inputs = {}, outputs = {} } = result.metafile;
-        
-        const analysis = {
-            totalInputSize: 0,
-            totalOutputSize: 0,
-            files: [],
-            warnings: result.warnings || [],
-            errors: result.errors || []
-        };
-
-        // Анализ входных файлов
-        Object.entries(inputs).forEach(([file, info]) => {
-            analysis.totalInputSize += info.bytes;
-            analysis.files.push({
-                file: path.basename(file),
-                size: info.bytes,
-                imports: info.imports?.length || 0
-            });
-        });
-
         // Анализ выходных файлов
-        Object.entries(outputs).forEach(([file, info]) => {
-            analysis.totalOutputSize += info.bytes;
-        });
+        if (metafile.outputs) {
+            for (const output in metafile.outputs) {
+                result.totalOutputSize += metafile.outputs[output].bytes || 0;
+            }
+        }
 
-        Logger.debug('Bundle analysis completed');
-        return analysis;
+        // Расчет коэффициента сжатия
+        if (result.totalInputSize > 0) {
+            result.ratio = (result.totalOutputSize / result.totalInputSize).toFixed(2);
+        }
+
+        return result;
     } catch (error) {
-        Logger.error('Bundle analysis failed:', error);
-        return {
-            error: error.message,
-            stack: error.stack
-        };
+        Logger.error('Bundle analysis error:', error);
+        return result;
     }
 }

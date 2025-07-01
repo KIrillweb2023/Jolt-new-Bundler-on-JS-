@@ -7,7 +7,7 @@ import { processChanges } from './change-processor.js';
  * @param {Object} config - Конфигурация бандлера
  * @param {Function} processChanges - Функция обработки изменений
  */
-export async function startWatcher(config, cache, dependencies) {
+export async function startWatcher(config, cache, dependencies) { /// [*] ///
     if (config.watcher) return;
 
     config.pendingChanges = new Set();
@@ -22,7 +22,12 @@ export async function startWatcher(config, cache, dependencies) {
         `${config.publicDir}/**/*`
     ];
 
-    const watcher = chokidar.watch(await globby(watchPatterns), {
+    const initialFiles = await globby(watchPatterns, {
+        ignore: ['node_modules/**'],
+        absolute: true
+    });
+
+    const watcher = chokidar.watch(initialFiles, {
         ignored: [
             /(^|[/\\])\../,
             /node_modules/,

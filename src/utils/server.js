@@ -5,7 +5,7 @@ import { Logger, colors } from '../core/Logger.js';
  * Запускает dev-сервер для разработки
  * @param {Object} config - Конфигурация сервера из JoltBundler
  */
-export function startServer(config) {
+export function startServer(config) {  /// [*] ///
     try {
         liveServer.start({
             root: config.outDir,

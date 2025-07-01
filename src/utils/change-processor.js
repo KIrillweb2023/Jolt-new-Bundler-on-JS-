@@ -1,7 +1,7 @@
 import { Logger } from "../core/Logger.js";
 import path from "node:path"
 
-export async function processChanges(config, cache, dependencies) {
+export async function processChanges(config, cache, dependencies) { /// [*] ///
     if (config.activeRebuild || config.pendingChanges.size === 0) return;
     config.activeRebuild = true;
 

@@ -6,7 +6,7 @@ import path from "node:path";
  * @param {Object} config - Конфигурация бандлера
  * @param {Object} cache - Объект кеша
  */
-export async function Cleaner(config, cache) {
+export async function Cleaner(config, cache) {  /// [*] ///
     perf.mark('clean-start');
     try {
         await fs.rm(config.outDir, { recursive: true, force: true });

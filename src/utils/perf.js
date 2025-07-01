@@ -1,6 +1,6 @@
 import { Logger } from "../core/Logger.js";
 
-export const perf = {
+export const perf = { /// [*] ///
     start: null,
     mark: (name) => {
         if (!perf.start) perf.start = performance.now();
