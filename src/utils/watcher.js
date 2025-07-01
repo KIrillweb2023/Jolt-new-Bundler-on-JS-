@@ -1,12 +1,13 @@
 import chokidar from 'chokidar';
 import { globby } from 'globby';
 import { Logger, colors } from '../core/Logger.js';
+import { processChanges } from './change-processor.js';
 /**
  * Инициализирует вотчер файлов
  * @param {Object} config - Конфигурация бандлера
  * @param {Function} processChanges - Функция обработки изменений
  */
-export async function startWatcher(config, processChanges) {
+export async function startWatcher(config, cache, dependencies) {
     if (config.watcher) return;
 
     config.pendingChanges = new Set();
@@ -41,7 +42,7 @@ export async function startWatcher(config, processChanges) {
     const handleChange = (filePath) => {
         config.pendingChanges.add(filePath);
         clearTimeout(config.debounceTimer);
-        config.debounceTimer = setTimeout(() => processChanges(), 100); //тут надо импортом возможно 
+        config.debounceTimer = setTimeout(() => processChanges(config, cache, dependencies), 100); //тут надо импортом возможно 
     };
 
     watcher

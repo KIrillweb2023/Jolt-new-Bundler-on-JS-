@@ -4,6 +4,7 @@ import { Logger } from "../core/Logger.js";
 import { globby } from "globby";
 import path from "node:path";
 import { FindFilesWithRetry } from "../utils/file-finder.js";
+import { minify }  from "html-minifier-terser";
 
 export async function processHtml(config, cache, isProduction, signal) {
     perf.mark('html-start');
@@ -70,7 +71,7 @@ export async function processSingleHtml(config, cache, isProduction, file, jsFil
         }
 
         if (isProduction && config.minify.html) {
-            html = await htmlMinifier(html, {
+            html = await minify(html, {
             collapseWhitespace: true,
             removeComments: true,
             minifyJS: false,

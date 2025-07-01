@@ -12,40 +12,66 @@ import autoprefixer from 'autoprefixer';
 import cssnano from 'cssnano';
 import { transform as lightningcss } from 'lightningcss';
 
-export async function processStyles(config, cache, signal, isProduction) {
+export async function processStyles(config, cache, signal, isProduction, changedFiles = null) {
     perf.mark('styles-start');
     const { include, exclude } = config.css;
-    const cssFiles = await globby(include, { ignore: exclude, signal: signal });
+    const cssFiles = changedFiles 
+        ? changedFiles.filter(f => /\.(css|scss|sass|less)$/i.test(f))
+        : await globby(include, { ignore: exclude, signal: signal });
 
     if (!cssFiles.length) return;
 
-    const cacheKey = cssFiles.map(f => path.basename(f)).join('|');
-    const latestMtime = Math.max(...await Promise.all(cssFiles.map(async f => (await fs.stat(f)).mtimeMs))).toString();
+    // Генерируем уникальный ключ кэша на основе всех CSS файлов
+    const allCssFiles = await globby(include, { ignore: exclude, signal: signal });
+    const cacheKey = allCssFiles.map(f => path.basename(f)).join('|');
+    
+    // Получаем хеш текущего состояния CSS файлов
+    const filesContent = await Promise.all(allCssFiles.map(f => fs.readFile(f, 'utf8')));
+    const contentHash = createHash('sha256').update(filesContent.join('')).digest('hex').slice(0, 8);
 
+    // Проверяем кэш
     if (config.cache && cache.styles.has(cacheKey)) {
         const cached = cache.styles.get(cacheKey);
-        if (cached.mtime === latestMtime) {
+        if (cached.hash === contentHash) {
             Logger.debug('Using cached CSS build');
             return;
         }
     }
 
     try {
-        const combinedCss = await compileCssWithDependencies(config, cssFiles, isProduction);
+        const combinedCss = await compileCssWithDependencies(config, allCssFiles, isProduction);
         const processedCss = await applyPostcssPlugins(config, combinedCss, isProduction);
-        const cssHash = createHash('sha256').update(processedCss).digest('hex').slice(0, 8);
-        const outputFile = path.join(config.outDir, `styles-${cssHash}.css`);
-
-        await clearOldCssBundles(config);
+        
+        // Всегда используем хешированное имя файла
+        const outputFile = path.join(config.outDir, `styles-${contentHash}.css`);
+        
+        // Удаляем старые CSS файлы только если хеш изменился
+        if (cache.styles.has(cacheKey)) {
+            const oldOutputFile = cache.styles.get(cacheKey).outputFile;
+            if (oldOutputFile !== outputFile) {
+                try {
+                    await fs.unlink(oldOutputFile);
+                } catch (e) {
+                    Logger.debug(`Could not delete old CSS file: ${e.message}`);
+                }
+            }
+        }
+        
         await fs.writeFile(outputFile, processedCss);
 
+        // Обновляем ссылку в HTML (если используется)
+        if (cache.html.size > 0) {
+            cache.html.clear();
+            await processHtml(config, cache, isProduction, signal);
+        }
+
         cache.styles.set(cacheKey, {
-            mtime: latestMtime,
-            hash: cssHash
+            hash: contentHash,
+            outputFile
         });
 
         perf.measure('Styles Processing', 'styles-start');
-        Logger.success(`Created CSS bundle: ${path.basename(outputFile)}`);
+        Logger.success(`Updated CSS bundle: ${path.basename(outputFile)}`);
     } catch (error) {
         if (error.name !== 'AbortError') {
             Logger.error('CSS processing failed:', error);

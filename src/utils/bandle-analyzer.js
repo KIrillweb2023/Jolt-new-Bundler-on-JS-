@@ -6,15 +6,45 @@ import { Logger } from '../core/Logger.js';
  * @param {Object} outputs - Метаданные esbuild (из result.metafile)
  */
 
-export function analyzeBundle(metafile) {
-    const bundles = Object.entries(metafile)
-        .map(([file, output]) => ({
-            file: path.basename(file),
-            size: (output.bytes / 1024).toFixed(2) + 'kb',
-            imports: output.imports.length
-        }))
-        .sort((a, b) => parseFloat(b.size) - parseFloat(a.size));
+export function analyzeBundle(result) {
+    try {
+        if (!result || !result.metafile) {
+            Logger.warn('No bundle analysis available - missing metafile');
+            return {};
+        }
 
-    Logger.info('\n📦 Bundle Analysis:');
-    console.table(bundles);
+        const { inputs = {}, outputs = {} } = result.metafile;
+        
+        const analysis = {
+            totalInputSize: 0,
+            totalOutputSize: 0,
+            files: [],
+            warnings: result.warnings || [],
+            errors: result.errors || []
+        };
+
+        // Анализ входных файлов
+        Object.entries(inputs).forEach(([file, info]) => {
+            analysis.totalInputSize += info.bytes;
+            analysis.files.push({
+                file: path.basename(file),
+                size: info.bytes,
+                imports: info.imports?.length || 0
+            });
+        });
+
+        // Анализ выходных файлов
+        Object.entries(outputs).forEach(([file, info]) => {
+            analysis.totalOutputSize += info.bytes;
+        });
+
+        Logger.debug('Bundle analysis completed');
+        return analysis;
+    } catch (error) {
+        Logger.error('Bundle analysis failed:', error);
+        return {
+            error: error.message,
+            stack: error.stack
+        };
+    }
 }

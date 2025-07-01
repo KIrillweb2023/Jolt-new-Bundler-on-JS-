@@ -276,7 +276,13 @@ export class JoltBundler {
   }
 
   #startWatcher() {
-    this.#config.watcher = startWatcher(this.#config, () => this.#processChanges());
+    this.#config.watcher = startWatcher(this.#config, this.#cache, {
+      copyStaticFiles: this.#copyStaticFiles.bind(this),
+      processStyles: this.#processStyles.bind(this),
+      processScripts: this.#processScripts.bind(this),
+      processAssets: this.#processAssets.bind(this),
+      processHtml: this.#processHtml.bind(this)
+    });
   }
 
   async #processChanges() {
