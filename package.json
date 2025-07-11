@@ -2,12 +2,10 @@
   "name": "jolt-bundler",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "jolt.config.js",
   "scripts": {
-    "dev": "cross-env NODE_ENV=development node index.js",
-    "build": "cross-env NODE_ENV=production node index.js",
-    "serve": "cross-env NODE_ENV=production node index.js --serve",
-    "watch": "cross-env NODE_ENV=development node index.js --watch"
+    "dev": "node ./src/core/Started.js",
+    "watch": "node ./src/core/Started.js --watch"
   },
   "keywords": [],
   "files": [
@@ -23,6 +21,7 @@
     "@tailwindcss/postcss": "^4.1.11",
     "@tailwindcss/postcss7-compat": "^2.2.17",
     "autoprefixer": "^9.8.8",
+    "bun": "^1.2.17",
     "chokidar": "^4.0.3",
     "cross-env": "^7.0.3",
     "cssnano": "^7.0.7",
@@ -40,11 +39,19 @@
     "tailwindcss": "^4.1.11"
   },
   "dependencies": {
+    "@parcel/watcher": "^2.5.1",
+    "@swc/core": "^1.12.9",
     "cli-progress": "^3.12.0",
+    "colorette": "^2.0.20",
+    "fast-glob": "^3.3.3",
+    "filesize": "^10.1.6",
+    "glob": "^11.0.3",
+    "html-minifier": "^4.0.0",
     "minimatch": "^10.0.3",
     "open": "^10.1.2",
     "progress": "^2.0.3",
     "sirv": "^3.0.1",
+    "source-map": "^0.7.4",
     "svgo": "^4.0.0",
     "ws": "^8.18.3"
   }
