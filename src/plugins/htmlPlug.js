@@ -138,7 +138,7 @@ export function htmlPlug(options = {}) {
             // Оптимизированная вставка CSS
             if (assets.css.length > 0) {
                 const cssTags = assets.css
-                    .map(cssFile => `<link rel="stylesheet" href="/${cssFile}">`)
+                    .map(cssFile => `<link rel="stylesheet" href="${cssFile}">`)
                     .join('\n  ');
 
                 if (result.includes(headEnd)) {
@@ -151,7 +151,7 @@ export function htmlPlug(options = {}) {
             // Оптимизированная вставка JS
             if (assets.js.length > 0) {
                 const jsTags = assets.js
-                    .map(jsFile => `<script src="/${jsFile}" ${loading}></script>`)
+                    .map(jsFile => `<script src="${jsFile}" ${loading}></script>`)
                     .join('\n  ');
 
                 if (result.includes(bodyEnd)) {

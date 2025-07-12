@@ -5,7 +5,6 @@ export const LogLevel = {
     ERROR: "ERROR",
     SUCCESS: "SUCCESS",
 };
-
 // ANSI-коды для цветов в терминале
 const TerminalColors = {
     RESET: "\x1b[0m",
@@ -36,7 +35,6 @@ const TerminalColors = {
     BG_CYAN: "\x1b[46m",
     BG_WHITE: "\x1b[47m",
 };
-
 // Стили для разных уровней логов (терминал)
 const LogStyles = {
     [LogLevel.DEBUG]: `${TerminalColors.DIM}${TerminalColors.BLUE}`,

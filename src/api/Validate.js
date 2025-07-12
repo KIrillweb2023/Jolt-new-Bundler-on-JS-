@@ -7,6 +7,7 @@ export function validateConfig(cfg) {
     if (!cfg.outfile && !cfg.outdir) {
         throw new Error('Either outfile or outdir must be specified');
     }
+
     logger.success('✅ Configuration is valid');
     return true;
 }
